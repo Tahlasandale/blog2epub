@@ -187,7 +187,14 @@ class Project:
                                       "un article par chapitre." % (len(chapters), _hosts(chapters))},
                       downloader, about_md=about, cover_url=cover or "")
         for chapter in chapters:
-            self.catalog.upsert(chapter.url, title_fr=chapter.title)
+            entry = self.catalog.upsert(chapter.url, title_fr=chapter.title,
+                                        date=chapter.date, lang=chapter.lang or target_lang)
+            if chapter.flag:
+                entry["status"] = "archived"
+            elif chapter.translated:
+                entry["status"] = archive_mod.STATUS_TRANSLATED
+            else:
+                entry["status"] = archive_mod.STATUS_PUBLISHED
             self.catalog.note_epub([chapter.url], title)
         self.catalog.save()
         problems = epub_mod.verify(out_path)

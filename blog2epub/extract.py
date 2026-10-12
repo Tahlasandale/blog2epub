@@ -117,22 +117,49 @@ def _strip_site_suffix(title):
     return title.strip()
 
 
+MONTHS = {"janvier": 1, "janv": 1, "jan": 1, "fevrier": 2, "février": 2, "fev": 2,
+          "fév": 2, "feb": 2, "mars": 3, "mar": 3, "avril": 4, "apr": 4,
+          "mai": 5, "juin": 6, "jun": 6, "juillet": 7, "jul": 7, "aout": 8,
+          "août": 8, "aug": 8, "septembre": 9, "sep": 9, "sept": 9, "octobre": 10,
+          "oct": 10, "novembre": 11, "nov": 11, "decembre": 12, "décembre": 12,
+          "dec": 12, "déc": 12}
+
+
 def _iso_date(text):
+    """Extrait une date ISO d'un texte libre, en français comme en anglais."""
     if not text:
         return ""
     match = re.search(r"(20\d\d)-(\d\d)-(\d\d)", text)
     if match:
         return match.group(0)
-    match = re.search(r"(\d{1,2})\s+(\w+)\s+(20\d\d)", text)
+    # 12 octobre 2026 / 12th October 2026 / October 12, 2026
+    match = re.search(r"(\d{1,2})(?:er|\b)?\s+([A-Za-zà-ÿ]{3,9})\.?\s+(20\d\d)", text)
     if match:
-        months = {"janvier": "01", "fevrier": "02", "février": "02", "mars": "03",
-                  "avril": "04", "mai": "05", "juin": "06", "juillet": "07",
-                  "aout": "08", "août": "08", "septembre": "09", "octobre": "10",
-                  "novembre": "11", "decembre": "12", "décembre": "12"}
-        name = match.group(2).lower()
-        if name in months:
-            return "%s-%s-%02d" % (match.group(3), months[name], int(match.group(1)))
+        month = MONTHS.get(match.group(2).lower())
+        if month:
+            return "%s-%02d-%02d" % (match.group(3), month, int(match.group(1)))
+    match = re.search(r"([A-Za-zà-ÿ]{3,9})\.?\s+(\d{1,2})(?:er)?,?\s+(20\d\d)", text)
+    if match:
+        month = MONTHS.get(match.group(1).lower())
+        if month:
+            return "%s-%02d-%02d" % (match.group(3), month, int(match.group(2)))
     return ""
+
+
+def _date_from_url(url):
+    """Rattrape les URL de la forme /2026/Oct/12/slug/ ou /2026/10/12/."""
+    path = urllib.parse.urlparse(url).path
+    match = re.search(r"/(20\d\d)/([A-Za-z]{3,9}|\d{2})/(\d{1,2})(?:/|$)", path)
+    if not match:
+        return ""
+    year, month_raw, day = match.groups()
+    if month_raw.isdigit():
+        month = int(month_raw)
+    else:
+        month = MONTHS.get(month_raw.lower())
+    if not month or not 1 <= int(day) <= 31:
+        return ""
+    return "%s-%02d-%02d" % (year, month, int(day))
 
 
 def _drop(node, root):
@@ -171,19 +198,10 @@ def extract(url, source, profile=None, date_hint=""):
 
     base = urllib.parse.urljoin(url, "/")
     art.title = collapse(_meta(root, META_TITLE)).strip()
-    if not art.title:
-        art.title = _first_text(root, profile.get("title") and [profile["title"]]
-                                or TITLE_CASCADE, url)
-    art.title = _strip_site_suffix(art.title) or art.slug
 
     art.author = collapse(_meta(root, META_AUTHOR)).strip()
-    if not art.author:
-        art.author = _first_text(root, AUTHOR_CASCADE, url)
-    art.author = re.split(r"\s+[-–—|]\s+|\s+par\s+", art.author)[0].strip() if art.author else ""
 
-    art.date = _iso_date(_meta(root, META_DATE)) or _iso_date(_first_text(root, DATE_CASCADE, url))
-    if not art.date:
-        art.date = _iso_date(date_hint) or _iso_date(url)
+    art.date = _iso_date(_meta(root, META_DATE))
 
     image = _meta(root, META_IMAGE)
     art.image = _abs(image, url) if image else ""
@@ -199,6 +217,25 @@ def extract(url, source, profile=None, date_hint=""):
         node = select_first(root, "body")
         body_node, art.container = node, "body"
         art.problems.append("conteneur introuvable, corps de la page entière")
+
+    # Les métadonnées absentes des balises meta sont cherchées dans le conteneur,
+    # pour ne pas attraper le titre du site (en-tête, bandeau, pied de page).
+    scope = body_node
+    if not art.title:
+        candidates = ([profile["title"]] if profile.get("title") else []) + TITLE_CASCADE
+        art.title = _first_text(scope, candidates, url)
+    art.title = _strip_site_suffix(art.title) or art.slug
+
+    if not art.author:
+        art.author = _first_text(scope, AUTHOR_CASCADE, url)
+    art.author = re.split(r"\s+[-–—|]\s+|\s+par\s+", art.author)[0].strip() if art.author else ""
+
+    if not art.date:
+        art.date = _iso_date(_first_text(scope, DATE_CASCADE, url))
+    if not art.date:
+        art.date = _iso_date(date_hint) or _date_from_url(url)
+    if not art.date:
+        art.date = _iso_date(scope.text_of()[:400])
 
     keep = profile.get("keep")
     if keep:
