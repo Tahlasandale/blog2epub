@@ -16,16 +16,29 @@ from . import translate as translate_mod
 from .extract import slug_for
 
 HELP = [
-    ("a", "ajouter les URL du champ de saisie à la liste"),
-    ("d", "télécharger, extraire et archiver les articles manquants"),
-    ("t", "traduire l'article sous le curseur (ouvre $EDITOR)"),
-    ("o", "importer les articles récents d'un export OPML"),
-    ("b", "construire l'EPUB (demande un titre)"),
+    ("a", "ajouter les URL saisies"),
+    ("d", "télécharger, extraire et archiver"),
+    ("t", "traduire l'article en tête de liste"),
+    ("o", "importer un export OPML"),
+    ("b", "construire l'EPUB"),
+    ("x", "retirer l'article en tête de liste"),
+    ("k", "retirer / remettre l'article en tête de liste"),
+    ("l", "afficher les URL complètes"),
+    ("?", "cette aide"),
+    ("q", "quitter"),
+]
+
+HELP_CURSES = [
+    ("Tab", "passer dans le champ de saisie / revenir à la liste"),
+    ("Entrée", "valider les URL saisies"),
+    ("espace", "retirer ou remettre l'article sous le curseur"),
+    ("j / k", "descendre / monter"),
+    ("g / G", "haut / bas de la liste"),
+    ("d", "télécharger, extraire et archiver"),
+    ("t", "traduire l'article sous le curseur"),
+    ("o", "importer un export OPML"),
+    ("b", "construire l'EPUB"),
     ("x", "retirer l'article sous le curseur"),
-    ("/", "filtrer la liste"),
-    ("j / k", "descendre / remonter"),
-    ("g / G", "haut / bas de liste"),
-    ("Entrée", "valider la saisie"),
     ("q", "quitter"),
 ]
 
@@ -98,6 +111,8 @@ def run_repl(project, seed=None):
             items.extend(new)
             for item in new:
                 item.refresh(project)
+        elif command == "k":
+            _toggle(items, 0)
         elif command == "d":
             _do_fetch(project, items)
         elif command == "t":
@@ -111,8 +126,15 @@ def run_repl(project, seed=None):
                 items.pop(0)
         elif command == "l":
             _show_long(items)
+        elif command == "k":
+            _toggle(items, 0)
         else:
             print("commande inconnue : %s (tapez ?)" % command)
+
+
+def _toggle(items, index):
+    if 0 <= index < len(items):
+        items[index].keep = not items[index].keep
 
 
 def _show(items, index=0):
@@ -243,113 +265,115 @@ def _loop(scr, project, items):
     curses.curs_set(1)
     input_buf = ""
     selected = 0
-    status = "Saisissez des URL puis « a » pour les ajouter."
-    filtering = False
+    # Deux modes : la liste capte les touches de commande, le champ de saisie
+    # capte le texte. Tab bascule entre les deux.
+    focus = "liste"
+    status = "Tab pour saisir des URL, Entrée pour les ajouter, ? pour l'aide."
     while True:
-        _draw(scr, items, selected, input_buf, status, filtering)
+        _draw(scr, items, selected, input_buf, status, focus)
         key = scr.getch()
-        if key in (curses.KEY_RESIZE,):
+        if key == curses.KEY_RESIZE:
             continue
         char = chr(key) if 0 <= key < 0x110000 else ""
+        is_enter = key in (curses.KEY_ENTER, 10, 13)
+        is_back = key in (curses.KEY_BACKSPACE, 127, 8)
 
-        if filtering:
-            if key in (curses.KEY_ENTER, 10, 13):
-                filtering = False
-                status = "Filtre effacé."
-            elif key in (curses.KEY_BACKSPACE, 127, 8):
-                status = status[:-1]
+        if focus == "saisie":
+            if is_back:
+                input_buf = input_buf[:-1]
+            elif is_enter:
+                added = [u for u in input_buf.split() if u.startswith("http")]
+                items.extend(Item(u) for u in added)
+                for item in items[len(items) - len(added):]:
+                    item.refresh(project)
+                input_buf = ""
+                focus = "liste"
+                status = "%d URL ajoutée(s). « d » pour télécharger." % len(added)
             elif char.isprintable():
-                status += char
+                input_buf += char
             continue
 
-        if key in (curses.KEY_BACKSPACE, 127, 8):
-            input_buf = input_buf[:-1]
+        if char == "\t" or key == 9:
+            focus = "saisie"
+            status = "Saisissez des URL puis Entrée."
             continue
-        if char.isprintable() and not char.isdigit():
-            input_buf += char
-            continue
-        if key == curses.KEY_DOWN:
+
+        if key == curses.KEY_DOWN or char == "j":
             selected = min(selected + 1, max(len(items) - 1, 0))
-            continue
-        if key == curses.KEY_UP:
+        elif key == curses.KEY_UP or char == "k":
             selected = max(selected - 1, 0)
-            continue
-
-        if key in (curses.KEY_ENTER, 10, 13):
-            added = [u for u in input_buf.split() if u.startswith("http")]
-            items.extend(Item(u) for u in added)
-            input_buf = ""
-            status = "%d URL ajoutée(s)." % len(added)
-        elif char == "q":
-            return 0
-        elif char == "a":
-            added = [u for u in input_buf.split() if u.startswith("http")]
-            items.extend(Item(u) for u in added)
-            input_buf = ""
-            status = "%d URL ajoutée(s)." % len(added)
+        elif char == "g":
+            selected = 0
+        elif char == "G":
+            selected = max(len(items) - 1, 0)
+        elif char == " " and items:
+            items[selected].keep = not items[selected].keep
+            status = "%s : %s" % (_short(items[selected].title),
+                                  "retenu" if items[selected].keep else "écarté")
         elif char == "d":
-            status = _do_fetch(project, items)
+            status = "%d article(s) récupéré(s)." % _do_fetch(project, items)
         elif char == "t":
             item = items[selected] if items else None
             _do_translate_one(project, item)
             if item:
                 item.refresh(project)
-            status = "Traduction de %s tentée." % (item.slug if item else "-")
+            status = "Traduction de %s tentée." % (item.slug if item else "—")
         elif char == "o":
-            _do_opml(project, input_buf)
+            status = "Tab pour saisir le chemin du fichier OPML."
+            focus = "saisie"
             input_buf = ""
-            status = "Flux listés ci-dessus."
         elif char == "b":
             return _do_build(project, items, interactive=True)
-        elif char == "x":
-            if items:
-                url = items.pop(selected).url
-                selected = min(selected, max(len(items) - 1, 0))
-                status = "Retiré : %s" % url
-        elif char == "/":
-            filtering = True
-            status = ""
+        elif char == "x" and items:
+            url = items.pop(selected).url
+            selected = min(selected, max(len(items) - 1, 0))
+            status = "Retiré : %s" % _short(url)
         elif char == "?":
-            status = "Aide : a ajouter · d télécharger · t traduire · b epub · x retirer · q quitter"
-        elif char in (" ", "\t"):
-            if items:
-                items[selected].keep = not items[selected].keep
-                status = "%s : %s" % (items[selected].title[:30],
-                                      "retenu" if items[selected].keep else "écarté")
+            status = " · ".join("%s %s" % (k, v) for k, v in HELP_CURSES[:6])
+        elif char == "q":
+            return 0
 
 
-def _draw(scr, items, selected, input_buf, status, filtering):
+def _short(text, size=44):
+    text = text or ""
+    return text if len(text) <= size else text[:size - 1] + "…"
+
+
+def _draw(scr, items, selected, input_buf, status, focus="liste"):
     scr.erase()
     height, width = scr.getmaxyx()
-    title = " blog2epub — composeurs d'EPUB à partir de billets de blog "
-    scr.addnstr(0, 0, title.ljust(width - 1), width - 1, curses.A_REVERSE)
+    scr.addnstr(0, 0, " blog2epub — composeurs d'EPUB à partir de billets de blog ".ljust(
+        width - 1), width - 1, curses.A_REVERSE)
 
     label = "URL> "
-    scr.addnstr(2, 0, label, len(label), curses.A_BOLD)
-    scr.addnstr(2, len(label), input_buf[-max(width - len(label) - 2, 10):],
-                max(width - len(label) - 2, 10))
+    attr = curses.A_BOLD | (curses.A_UNDERLINE if focus == "saisie" else 0)
+    scr.addnstr(2, 0, label, len(label), attr)
+    room = max(width - len(label) - 2, 10)
+    scr.addnstr(2, len(label), input_buf[-room:], room)
 
     scr.addnstr(4, 0, "Articles", 10, curses.A_UNDERLINE)
-    visible = [i for i in items if not filtering or filtering in
-               (i.title or "") or filtering in i.url]
-    row = 5
-    visible_rows = height - 9
+    visible = list(items)
+    row, visible_rows = 5, max(height - 9, 1)
     start = max(0, min(selected - visible_rows // 2, len(visible) - visible_rows))
     for offset, item in enumerate(visible[start:start + visible_rows]):
         y = row + offset
-        if y >= height - 4:
+        if y >= height - 3:
             break
         mark = "[x]" if item.keep else "[ ]"
-        line = " %-5s %-11s %-10s %s" % (mark, item.state, item.date,
-                                         (item.title or item.url)[:max(width - 34, 10)])
-        if visible[start + offset] is items[selected] if selected < len(items) else False:
+        line = " %-4s %-11s %-10s %s" % (mark, item.state, item.date,
+                                         (item.title or item.url)[:max(width - 32, 10)])
+        line = line[:width - 1]
+        if items and item is items[selected]:
             scr.addnstr(y, 0, line.ljust(width - 1), width - 1, curses.A_REVERSE)
         else:
             scr.addnstr(y, 0, line, width - 1)
 
-    footer = " a ajouter · d télécharger · t traduire · b epub · x retirer · ? aide · q quitter "
-    scr.addnstr(height - 3, 0, footer.ljust(width - 1), width - 1, curses.A_REVERSE)
+    footer = (" Tab saisie ·Entrée valider · espace retenir · j/k naviguer ·"
+              " d télécharger · t traduire · b epub · x retirer · ? aide · q quitter ")
+    scr.addnstr(height - 3, 0, footer.ljust(width - 1)[:width - 1], width - 1,
+                curses.A_REVERSE)
     scr.addnstr(height - 2, 0, status[:width - 1], width - 1)
-    count = "%d article(s) · %d retenu(s)" % (len(items), len([i for i in items if i.keep]))
-    scr.addnstr(height - 1, 0, count.ljust(width - 1), width - 1)
+    kept = len([i for i in items if i.keep])
+    scr.addnstr(height - 1, 0, ("%d article(s) · %d retenu(s)" % (len(items), kept)
+                                ).ljust(width - 1), width - 1)
     scr.refresh()
