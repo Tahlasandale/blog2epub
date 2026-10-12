@@ -120,13 +120,16 @@ class EpubBuilder:
         ext = _image_ext(data, ctype, url)
         base = os.path.splitext(os.path.basename(urllib.parse.urlparse(url).path))[0]
         base = re.sub(r"[^A-Za-z0-9_-]+", "-", base)[:40] or "img"
-        count = sum(1 for name in self.images.values() if name.startswith(base))
+        count = sum(1 for name in self.images.values() if name.startswith(base + "-"))
         name = "%s-%d.jpg" % (base, count + 1)
         dest = os.path.join(self.tmp, "OEBPS", "images", name)
         img_conf = self.settings.get("images", {})
         if not _resize(data, dest, ext, img_conf.get("quality", 88),
                        img_conf.get("max_width", 1600)):
-            pass
+            # Conversion impossible : on écrit les octets d'origine pour ne pas
+            # laisser une référence cassée dans le livre.
+            with open(dest, "wb") as handle:
+                handle.write(data)
         self.images[url] = name
         return name
 

@@ -147,6 +147,7 @@ class Project:
                     content = re.sub(r"^---\s*\n.*?\n---\s*\n", "", content, flags=re.S)
                     body = content
                     translated_here = True
+                    chapter.lang = target_lang  # le chapitre est désormais en français
                 else:
                     chapter.flag = "Traduction automatique indisponible — version originale"
                 fr_title = translate_mod.read_title(self.translation_path(article.slug))

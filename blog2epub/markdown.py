@@ -217,21 +217,37 @@ def esc(text):
 
 
 def render_inline(text):
-    codes = []
+    """Markdown inline vers HTML.
 
-    def stash(match):
+    Les_balises sont extraites dans l'ordre (code, puis gras, puis italique) et
+    remises à leur place à la fin : sans cela, un `**gras**` à l'intérieur d'un
+    `*italique*` produit `<strong><em>…</strong></em>`, imbriqué croisé et donc
+    invalide en XHTML.
+    """
+    codes = []
+    bolds = []
+
+    def stash_code(match):
         codes.append(match.group(1))
         return "\x00%d\x00" % (len(codes) - 1)
 
-    s = CODE_RE.sub(stash, text)
+    def stash_bold(match):
+        bolds.append(match.group(1))
+        return "\x01%d\x01" % (len(bolds) - 1)
+
+    s = CODE_RE.sub(stash_code, text)
     s = esc(s)
     s = IMG_RE.sub(lambda m: '<img src="%s" alt="%s"/>'
                   % (m.group(2), m.group(1).replace('"', "&quot;")), s)
     s = LINK_RE.sub(lambda m: '<a href="%s">%s</a>' % (m.group(2), m.group(1)), s)
-    s = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", s, flags=re.S)
-    s = re.sub(r"(?<![\w*])\*(?!\s)(.+?)(?<!\s)\*(?![\w*])", r"<em>\1</em>", s, flags=re.S)
+    s = re.sub(r"\*\*(?!\s)(.+?)(?<!\s)\*\*", stash_bold, s, flags=re.S)
+    s = re.sub(r"(?<![\w*\\])\*(?!\s)(.+?)(?<!\s)\*(?![\w*\\])", r"<em>\1</em>",
+               s, flags=re.S)
     s = re.sub(r"~~(.+?)~~", r"<s>\1</s>", s, flags=re.S)
+    s = re.sub(r"\\([*_`~\[\]])", r"\1", s)  #astersisque échappé : caractère littéral
     s = re.sub(r" {2}\n", "<br/>\n", s)
+    for i, bold in enumerate(bolds):
+        s = s.replace("\x01%d\x01" % i, "<strong>%s</strong>" % bold)
     for i, code in enumerate(codes):
         s = s.replace("\x00%d\x00" % i, "<code>%s</code>" % esc(code))
     return s.strip()
