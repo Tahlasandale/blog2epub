@@ -1,0 +1,31 @@
+{
+  "_comment": [
+    "Profils de sites. La détection générique (voir extract.CASCADE) suffit à la",
+    "majorité des blogs ; ces profils ne servent qu'aux cas particuliers.",
+    "Clés reconnues : container, remove, keep, title, author, permalink.",
+    "Sélecteurs acceptés : tag, .classe, #id, tag.classe, combinateur descendant",
+    "(espace), listes séparées par des virgules."
+  ],
+  "sites": [
+    {
+      "host": "ploum.net",
+      "container": "article",
+      "remove": "div.signature, nav, .navbar",
+      "title": "h1",
+      "author": "p.subtitle",
+      "permalink": "gemini"
+    },
+    {
+      "host": "framablog.org",
+      "container": "article, .entry-content",
+      "remove": ".sharedaddy, .jp-relatedposts, nav, footer",
+      "title": "h1.entry-title, h1"
+    },
+    {
+      "host": "simonwillison.net",
+      "container": "#primary",
+      "remove": "#secondary, #smallhead, #ft, nav",
+      "title": "h2, h1"
+    }
+  ]
+}
