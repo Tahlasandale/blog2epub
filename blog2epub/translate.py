@@ -61,37 +61,146 @@ def _strip_preamble(text):
     return "\n".join(lines).strip()
 
 
-def translate_one(source_md, source_name, model="", timeout=900, lang="fr"):
-    """Traduit un Markdown et renvoie (markdown, titre traduit ou None)."""
-    if not available():
-        raise TranslationError("CLI opencode introuvable (OPENCODE=%s)" % OPENCODE)
+def chunk_markdown(md, max_words=420):
+    """Découpe un Markdown aux frontières de sections, sans casser un bloc.
+
+    Les modèles free-tier tronquent les longues sorties : traduire par sections
+    est nettement plus fiable que tout d'un bloc.
+    """
+    blocks = md.strip().split("\n\n")
+    chunks, current, words = [], [], 0
+    for block in blocks:
+        count = len(block.split())
+        is_heading = block.lstrip().startswith("#")
+        if current and words + count > max_words and not is_heading:
+            chunks.append("\n\n".join(current))
+            current, words = [], 0
+        if count > max_words * 2:
+            # bloc géant (long listing) : on le laisse seul dans son chunk
+            if current:
+                chunks.append("\n\n".join(current))
+                current, words = [], 0
+            chunks.append(block)
+            continue
+        current.append(block)
+        words += count
+    if current:
+        chunks.append("\n\n".join(current))
+    return chunks
+
+
+def _extract_text(output):
+    """`opencode run --format json` sort un flux JSONL d'événements.
+
+    On n'en garde que les parties de texte ; en repli, on nettoie la sortie
+    brute des séquences de progression et des codes couleur.
+    """
+    pieces = []
+    for line in output.split("\n"):
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        part = event.get("part") or {}
+        if part.get("type") == "text" and part.get("text"):
+            pieces.append(part["text"])
+    if pieces:
+        return "\n".join(pieces)
+    cleaned = re.sub(r"\x1b\[[0-9;]*m", "", output)
+    return "\n".join(l for l in cleaned.split("\n")
+                     if not l.strip().startswith("> build"))
+
+
+def _run_once(source_md, source_name, model, timeout, chunk_index=None):
+    prompt = PROMPT.format(source=source_name)
+    if chunk_index is not None:
+        prompt = ("Tu traduis la section %d d'un billet. Traduis uniquement le contenu "
+                  "du fichier joint, sans titre de billet ni commentaire.\n\n%s"
+                  % (chunk_index, prompt))
     with tempfile.TemporaryDirectory() as tmp:
         src_path = os.path.join(tmp, "source.md")
         with open(src_path, "w", encoding="utf-8") as handle:
             handle.write(source_md)
-        cmd = [OPENCODE, "run", "--auto", "--format", "default",
-               "-f", src_path, PROMPT.format(source=source_name)]
+        cmd = [OPENCODE, "run", "--auto", "--format", "json"]
         if model:
-            cmd[1:1] = ["--model", model]
+            cmd += ["--model", model]
+        cmd += ["-f", src_path, prompt]
         try:
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         except subprocess.TimeoutExpired as exc:
             raise TranslationError("délai dépassé après %ds" % timeout) from exc
     if result.returncode != 0:
-        raise TranslationError("opencode a échoué (%d) : %s"
-                              % (result.returncode, (result.stderr or "").strip()[:200]))
-    body = _strip_preamble(result.stdout)
-    if len(body.split()) < max(20, len(source_md.split()) // 4):
-        raise TranslationError("sortie trop courte pour être une traduction")
-    title = None
-    match = re.match(r'^---\s*\n(.*?)\n---\s*\n', result.stdout.strip(), re.S)
-    if match:
-        for line in match.group(1).split("\n"):
-            if ":" in line:
-                key, value = line.split(":", 1)
-                if key.strip() == "title":
-                    title = value.strip().strip('"').strip("'")
-    return body, title
+        message = re.sub(r"\x1b\[[0-9;]*m", "", result.stderr or "")
+        message = " ".join(message.split())
+        raise TranslationError("opencode a échoué : %s" % message[:160])
+    return _extract_text(result.stdout)
+
+
+def _title_of(output):
+    match = re.match(r"^---\s*\n(.*?)\n---\s*\n", output.strip(), re.S)
+    if not match:
+        return None
+    for line in match.group(1).split("\n"):
+        if ":" in line:
+            key, value = line.split(":", 1)
+            if key.strip() == "title":
+                return value.strip().strip('"').strip("'")
+    return None
+
+
+def translate_one(source_md, source_name, model="", timeout=900, lang="fr",
+                  attempts=2, on_progress=None, single_shot=2500, chunk_words=600):
+    """Traduit un Markdown et renvoie (markdown, titre traduit ou None).
+
+    `model` peut être une liste de modèles : le premier qui répond correctement
+    est retenu, ce qui évite de rester bloqué sur un modèle déprécié.
+    """
+    if not available():
+        raise TranslationError("CLI opencode introuvable (OPENCODE=%s)" % OPENCODE)
+    models = [m for m in (model if isinstance(model, (list, tuple)) else [model]) if m]
+    if not models:
+        models = [""]
+
+    words = len(source_md.split())
+    if words <= single_shot:
+        # En dessous du seuil, un jeton unique donne un bien meilleur rendu que
+        # des sections : le modèle dispose du contexte et garde titres et liens.
+        chunks = [source_md]
+    else:
+        chunks = chunk_markdown(source_md, chunk_words)
+    total = len(chunks)
+    pieces, title, last_error = [], None, None
+    for index, chunk in enumerate(chunks, start=1):
+        done = False
+        for candidate in models:
+            for attempt in range(attempts):
+                try:
+                    output = _run_once(chunk, source_name, candidate, timeout,
+                                       index if total > 1 else None)
+                except TranslationError as exc:
+                    last_error = exc
+                    continue
+                body = _strip_preamble(output)
+                if len(body.split()) < max(10, len(chunk.split()) // 3):
+                    last_error = TranslationError(
+                        "section %d/%d : sortie trop courte (%d mots pour %d)"
+                        % (index, total, len(body.split()), len(chunk.split())))
+                    continue
+                if index == 1:
+                    title = _title_of(output) or title
+                pieces.append(body)
+                done = True
+                break
+            if done:
+                break
+        if not done:
+            raise last_error or TranslationError("traduction impossible")
+        if on_progress:
+            on_progress(index, total)
+    return "\n\n".join(pieces), title
 
 
 # --------------------------------------------------------------------------

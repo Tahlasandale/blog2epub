@@ -89,8 +89,9 @@ class Project:
         réécrites : le fichier fr/ fait foi.
         """
         settings = self.config.settings.get("translate", {})
-        model = model or settings.get("model", "")
+        models = model or settings.get("model", "")
         timeout = settings.get("timeout", 900)
+        attempts = settings.get("attempts", 2)
         done, failed = [], []
         for article in articles:
             if not article.lang or article.lang == target_lang:
@@ -103,7 +104,11 @@ class Project:
                 print("  ⇢ traduction de %s" % _short(article.title))
             try:
                 body, title = translate_mod.translate_one(
-                    article.body_md, article.slug + ".md", model=model, timeout=timeout)
+                    article.body_md, article.slug + ".md", model=models,
+                    timeout=timeout, attempts=attempts,
+                    single_shot=settings.get("single_shot", 2500),
+                    chunk_words=settings.get("chunk_words", 600),
+                    on_progress=None if quiet else _progress())
             except translate_mod.TranslationError as exc:
                 print("  ! traduction échouée (%s) : %s" % (article.slug, exc),
                       file=sys.stderr)
@@ -199,6 +204,13 @@ class Project:
         self.catalog.save()
         problems = epub_mod.verify(out_path)
         return out_path, chapters, problems
+
+
+def _progress():
+    def report(index, total):
+        if total > 1:
+            print("      section %d/%d" % (index, total))
+    return report
 
 
 def _host(url):

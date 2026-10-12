@@ -62,6 +62,7 @@ class Article:
         self.permalink = ""
         self.characters = 0
         self.container = ""
+        self.media = 0
         self.problems = []
 
     def __repr__(self):
@@ -270,6 +271,8 @@ def extract(url, source, profile=None, date_hint=""):
         block_md(k, url, out)
     art.body_md = clean_md("\n".join(out))
     art.characters = len(re.sub(r"\s+", " ", art.body_md))
+    art.media = sum(len(body_node.find_all(tag))
+                    for tag in ("audio", "video", "iframe", "embed"))
 
     if profile.get("permalink") == "gemini":
         parsed = urllib.parse.urlparse(url)
@@ -287,16 +290,25 @@ def _abs(href, base):
 
 
 def classify(article):
-    """Classe un article pour l'import de flux.
+    """Classe une entrée pour l'import de flux.
 
-    Retourne un couple (code, motif) : 'article', 'lien', 'creux' ou 'mort'.
+    Retourne (code, motif) : 'article', 'média', 'lien', 'creux' ou 'mort'.
+    Les seuils sont volontairement conservateurs : mieux vaut garder un article
+    médiocre que laisser filer une vidange de liens.
     """
+    if article.characters == 0:
+        return "mort", "aucun contenu extrait"
+    if article.media and article.characters < 3000:
+        return "média", "lecteur audio ou vidéo, %d caractères de texte" % article.characters
     if article.characters < 400:
         return "creux", "corps trop court (%d caractères)" % article.characters
-    if len(article.body_md.split("\n")) < 4:
-        return "creux", "presque aucun paragraphe"
-    links = len(re.findall(r"(?<!\!)\[[^\]]*\]\(", article.body_md))
+    blocks = [b for b in article.body_md.split("\n\n") if b.strip()]
     words = len(article.body_md.split())
-    if links > 8 and links * 6 > words:
-        return "lien", "semble une vidange de liens (%d liens pour %d mots)" % (links, words)
+    if blocks:
+        average = words / len(blocks)
+        # Une page mince faite de très nombreux blocs : vidange de liens,
+        # index, sommaire. Un vrai billet average largement au-dessus.
+        if average < 10 and words < 600:
+            return "lien", ("page mince : %d mots en %d blocs (%.0f mots/bloc)"
+                            % (words, len(blocks), average))
     return "article", ""

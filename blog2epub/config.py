@@ -13,9 +13,14 @@ DEFAULT_SETTINGS = {
         "title": "Anthologie",
     },
     "translate": {
-        # vide = modèle configuré dans opencode
-        "model": "",
+        # Liste de modèles opencode essayés dans l'ordre. Vide = celui
+        # configuré dans opencode. Le repli évite les modèles dépréciés.
+        "model": ["opencode/space-bunny-free", "opencode/ling-3.1-flash-free"],
         "timeout": 900,
+        "attempts": 2,
+        # En dessous de single_shot mots, un seul appel ; au-dessus, découpe
+        "single_shot": 2500,
+        "chunk_words": 600,
     },
     "opml": {
         "days": 7,
