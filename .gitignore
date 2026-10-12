@@ -1,0 +1,18 @@
+# Livres produits
+out/
+*.epub
+*.epub.build/
+
+# Archives et traductions : régénérables, jamais versionnées
+archive/
+fr/
+src/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Divers
+.DS_Store
+*.swp
