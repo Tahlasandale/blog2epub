@@ -16,3 +16,6 @@ __pycache__/
 # Divers
 .DS_Store
 *.swp
+# Sorties de débogage
+traduction-*.md
+*-fr.md
